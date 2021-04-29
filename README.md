@@ -1,10 +1,14 @@
-# Promise源码学习
+[toc]
+# 震惊，实现Promise竟然只需要一分钟，史上最简单的Promise源码教学
+
+## 一、概念
+
 - Fulfilled-Promise，被完成的Promise对象
 - Rejected-Promise，被拒绝的Promise对象
 
-## Promise的特点
+## 二、Promise的特点
 
-### then/catch/finally都会返回一个新的Promise对象
+### 2.1 then/catch/finally都会返回一个新的Promise对象
 
 ```
 // 测试then
@@ -31,7 +35,7 @@ p2.finally(()=>{
 });
 ```
 
-### 即使then/catch内部函数返回Promise对象，then/catch仍然是返回新对象，与内部函数返回的Promise有相同的执行结果
+### 2.2 即使then/catch内部函数返回Promise对象，then/catch仍然是返回新对象，与内部函数返回的Promise有相同的执行结果
 
 ```
 // 测试then
@@ -64,14 +68,14 @@ Promise.resolve()
     .then((v)=>console.log(v)) //打印1，说明新对象和内部函数有相同的执行结果
 ```
 
-### 如果onFulfilled/onRejcted返回值是Rejected-Promise，则then/catch也将会返回新的Rejected-Promise对象
+### 2.3 如果onFulfilled/onRejcted返回值是Rejected-Promise，则then/catch也将会返回新的Rejected-Promise对象
 ```
 Promise.resolve()
     .then(()=>Promise.reject(1))
     .catch((v)=>console.log(v)) // 调用了catch，打印1
 ```
 
-### finally无法修改Promise状态
+### 2.4 finally无法修改Promise状态
 ```
 // 
 Promise.resolve(1)
@@ -81,7 +85,7 @@ Promise.resolve(1)
     });
 ```
 
-### 可以多次调用then/catch/finally方法
+### 2.5 可以多次调用then/catch/finally方法
 
 ```
 // 测试then和finally,catch是一样的
@@ -96,7 +100,7 @@ p.finally(() => console.log("finally1")); //打印finally1
 p.finally(() => console.log("finally2")); //打印finally2
 ```
 
-### promise按事件队列进行执行
+### 2.6 promise按事件队列进行执行
 
 ```
 Promise.resolve().then(() => {
@@ -124,9 +128,9 @@ Promise.resolve().then(()=>{
 2-2
 ```
 
-## 实现难点
+## 三、实现难点
 
-### 构建事件队列
+### 3.1 构建事件队列
 
 - 队列规则：先进先出
 - 每次触发执行then/catch/finally内部函数时插入到事件队列中
@@ -144,26 +148,24 @@ function runQueue() {
 }
 ```
 
-### then/catch/finally内部函数的处理
+### 3.2 then/catch/finally内部函数的处理
 
 - 内部函数处理时，需要返回一个新的Promise对象
     ```
-    function runInnerFunc(promise, onFulfill, onRejected) {
-        let obj = promise[randomKey];
+    function handleThen(promise, onFulfill, onRejected) {
         return new MyPromise((resolve, reject) => {
-            obj.resolveWatcher.push(createWatcher(promise, resolve, reject, onFulfill));
-            obj.rejectedWatcher.push(createWatcher(promise, resolve, reject, onRejected));
-            obj.tryFinish();
+            promise._resolveWatcher.push(createWatcher(promise, resolve, reject, onFulfill));
+            promise._rejectedWatcher.push(createWatcher(promise, resolve, reject, onRejected));
+            promise._tryFinish();
         });
     }
     ```
 - 内部函数执行时，需要通过事件队列
     ```
     function createWatcher(promise, resolve, reject, innerFunc) {
-        let obj = promise[randomKey];
         return () => {
             eventQueue.addQueue(() => {
-                handleInnerFuncRes(resolve, reject, innerFunc, obj.result);
+                handleInnerFuncRes(resolve, reject, innerFunc, promise);
             });
         };
     }
@@ -172,8 +174,8 @@ function runQueue() {
 
 - 内部函数执行结果，如果返回Promise的处理
     ```
-    function handleInnerFuncRes(resolve, reject, innerFunc, result) {
-        let res = innerFunc && innerFunc(result);
+    function handleInnerFuncRes(resolve, reject, innerFunc, promise) {
+        let res = innerFunc && innerFunc(promise._result);
         if (res && res instanceof MyPromise) {
             res.then((value) => {
                 resolve(value);
@@ -187,174 +189,16 @@ function runQueue() {
     ```
 - finally内部函数不需要监听返回值，直接使用父级的返回值即可。
     ```
-    function createFinallyWatcher(promise, resultFunc, innerFunc) {
-        let obj = promise[randomKey];
-        return () => {
-            eventQueue.addQueue(() => {
-                innerFunc && innerFunc();
-                resultFunc(obj.result);
-            });
-        };
-    }
-    ```
-
-## 手写简易Promise（源码）
-
-- eventQueue.js
-    ```
-    const queue = [];
-    
-    function runQueue() {
-        while (queue.length > 0) {
-            let func = queue.shift();
-            func && func();
-        }
-        setTimeout(runQueue,1)
-    }
-    
-    function addQueue(func) {
-        queue.push(func);
-    }
-    
-    module.exports = {
-        addQueue:addQueue,
-        runQueue:runQueue,
-    }
-    ```
-    
-- MyPromise.js
-    ```
-    const eventQueue = require("./eventQueue");
-    const STATE_FULFILLED = "fulfilled";
-    const STATE_REJECTED = "rejected";
-    const randomKey = Math.random().toString(16).substr(2);
-    
-    eventQueue.runQueue();
-    
-    /**
-     * 创建观察者
-     * 1. innerFunc的执行需要放到事件队列中
-     */
-    function createWatcher(promise, resolve, reject, innerFunc) {
-        let obj = promise[randomKey];
-        return () => {
-            eventQueue.addQueue(() => {
-                handleInnerFuncRes(resolve, reject, innerFunc, obj.result);
-            });
-        };
-    }
-    
-    function createFinallyWatcher(promise, resultFunc, innerFunc) {
-        let obj = promise[randomKey];
-        return () => {
-            eventQueue.addQueue(() => {
-                innerFunc && innerFunc();
-                resultFunc(obj.result);
-            });
-        };
-    }
-    
-    /**
-     * 执行内部函数
-     * 1.内部函数需要返回一个新的Promise对象
-     */
-    function runInnerFunc(promise, onFulfill, onRejected) {
-        let obj = promise[randomKey];
-        return new MyPromise((resolve, reject) => {
-            obj.resolveWatcher.push(createWatcher(promise, resolve, reject, onFulfill));
-            obj.rejectedWatcher.push(createWatcher(promise, resolve, reject, onRejected));
-            obj.tryFinish();
-        });
-    }
-    
-    function runInnerFinallyFunc(promise, innerFunc) {
-        let obj = promise[randomKey];
-        return new MyPromise((resolve, reject) => {
-            obj.resolveWatcher.push(createFinallyWatcher(promise,resolve,innerFunc));
-            obj.rejectedWatcher.push(createFinallyWatcher(promise,reject,innerFunc));
-            obj.tryFinish();
-        });
-    }
-    
-    /**
-     * 处理内部函数的执行结果
-     * 1.内部函数执行结果为Promise时，需要等待Promise执行结果
-     */
-    function handleInnerFuncRes(resolve, reject, innerFunc, result) {
-        let res = innerFunc && innerFunc(result);
-        if (res && res instanceof MyPromise) {
-            res.then(
-                (v) => {
-                    resolve(v);
-                },
-                (v) => {
-                    reject(v);
-                });
-        } else {
-            resolve(res);
-        }
-    }
-    
-    function MyPromise(executor) {
-        const obj = {
-            result: null,
-            state: null,
-            resolveWatcher: [],
-            rejectedWatcher: [],
-            tryFinish: function () {
-                let watchers = [];
-                if (this.state === STATE_FULFILLED) {
-                    watchers = this.resolveWatcher;
-                } else if (this.state === STATE_REJECTED) {
-                    watchers = this.rejectedWatcher;
-                }
-                while (watchers.length > 0) {
-                    let watcher = watchers.shift();
-                    watcher(this.result);
-                }
-            }
-        };
-        this[randomKey] = obj;
-        executor(
-            (v) => {
-                if (obj.state === null) {
-                    obj.state = STATE_FULFILLED;
-                    obj.result = v;
-                    obj.tryFinish();
-                }
-            },
-            (v) => {
-                if (obj.state === null) {
-                    obj.state = STATE_REJECTED;
-                    obj.result = v;
-                    obj.tryFinish();
-                }
-            },
-        );
-    
-        this.then = function (onFulfil, onRejected) {
-            return runInnerFunc(this, onFulfil, onRejected);
-        };
-    
-        this.catch = function (onRejected) {
-            return runInnerFunc(this, null, onRejected);
-        };
-    
-        this.finally = function (func) {
-            return runInnerFinallyFunc(this, func);
-        };
-    }
-    
-    MyPromise.resolve = function (v) {
-        return new MyPromise(function (resolve, reject) {
-            resolve(v);
+    this.finally = function (callback) {
+        return this.then((v) => {
+            callback && callback();
+            return v;
+        }, (reason) => {
+            callback && callback();
+            return MyPromise.reject(reason);
         });
     };
-    MyPromise.reject = function (v) {
-        return new MyPromise(function (resolve, reject) {
-            reject(v);
-        });
-    };
-    
-    module.exports = MyPromise;
     ```
+    > 通过then实现
+
+> 源码：[https://github.com/joey-lucky/MyPromise](https://github.com/joey-lucky/MyPromise)
