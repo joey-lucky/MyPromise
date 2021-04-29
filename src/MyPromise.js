@@ -1,29 +1,23 @@
 const eventQueue = require("./eventQueue");
 const STATE_FULFILLED = "fulfilled";
 const STATE_REJECTED = "rejected";
-const randomKey = Math.random().toString(16).substr(2);
+const PROMISE_ID = Math.random().toString(36).substr(2); // 用于标识是否初始化，是否为MyPromise对象
 
 eventQueue.runQueue();
+
+let id = 1;
+function nextId() {
+    return ++id;
+}
 
 /**
  * 创建观察者
  * 1. innerFunc的执行需要放到事件队列中
  */
 function createWatcher(promise, resolve, reject, innerFunc) {
-    let obj = promise[randomKey];
     return () => {
         eventQueue.addQueue(() => {
-            handleInnerFuncRes(resolve, reject, innerFunc, obj.result);
-        });
-    };
-}
-
-function createFinallyWatcher(promise, resultFunc, innerFunc) {
-    let obj = promise[randomKey];
-    return () => {
-        eventQueue.addQueue(() => {
-            innerFunc && innerFunc();
-            resultFunc(obj.result);
+            handleInnerFuncRes(resolve, reject, innerFunc, promise);
         });
     };
 }
@@ -32,21 +26,11 @@ function createFinallyWatcher(promise, resultFunc, innerFunc) {
  * 执行内部函数
  * 1.内部函数需要返回一个新的Promise对象
  */
-function runInnerFunc(promise, onFulfill, onRejected) {
-    let obj = promise[randomKey];
+function handleThen(promise, onFulfill, onRejected) {
     return new MyPromise((resolve, reject) => {
-        obj.resolveWatcher.push(createWatcher(promise, resolve, reject, onFulfill));
-        obj.rejectedWatcher.push(createWatcher(promise, resolve, reject, onRejected));
-        obj.tryFinish();
-    });
-}
-
-function runInnerFinallyFunc(promise, innerFunc) {
-    let obj = promise[randomKey];
-    return new MyPromise((resolve, reject) => {
-        obj.resolveWatcher.push(createFinallyWatcher(promise, resolve, innerFunc));
-        obj.rejectedWatcher.push(createFinallyWatcher(promise, reject, innerFunc));
-        obj.tryFinish();
+        promise._resolveWatcher.push(createWatcher(promise, resolve, reject, onFulfill));
+        promise._rejectedWatcher.push(createWatcher(promise, resolve, reject, onRejected));
+        promise._tryFinish();
     });
 }
 
@@ -54,8 +38,8 @@ function runInnerFinallyFunc(promise, innerFunc) {
  * 处理内部函数的执行结果
  * 1.内部函数执行结果为Promise时，需要等待Promise执行结果
  */
-function handleInnerFuncRes(resolve, reject, innerFunc, result) {
-    let res = innerFunc && innerFunc(result);
+function handleInnerFuncRes(resolve, reject, innerFunc, promise) {
+    let res = innerFunc && innerFunc(promise._result);
     if (res && res instanceof MyPromise) {
         res.then((value) => {
             resolve(value);
@@ -67,53 +51,72 @@ function handleInnerFuncRes(resolve, reject, innerFunc, result) {
     }
 }
 
-function MyPromise(executor) {
-    const obj = {
-        result: null,
-        state: null,
-        resolveWatcher: [],
-        rejectedWatcher: [],
-        tryFinish: function () {
+function resolve(promise, value) {
+    if (promise._state == null) {
+        promise._state = STATE_FULFILLED;
+        promise._result = value;
+        promise._tryFinish();
+    }
+}
+
+function reject(promise, reason) {
+    if (promise._state == null) {
+        promise._state = STATE_REJECTED;
+        promise._result = reason;
+        promise._tryFinish();
+    }
+}
+
+/**
+ * 初始化promise
+ */
+function makePromise(promise) {
+    if (!promise[PROMISE_ID]) {
+        promise[PROMISE_ID] = nextId();
+        promise._resolveWatcher = [];
+        promise._rejectedWatcher = [];
+        promise._state = null;
+        promise._result = null;
+        promise._tryFinish = () => {
             let watchers = [];
-            if (this.state === STATE_FULFILLED) {
-                watchers = this.resolveWatcher;
-            } else if (this.state === STATE_REJECTED) {
-                watchers = this.rejectedWatcher;
+            if (promise._state === STATE_FULFILLED) {
+                watchers = promise._resolveWatcher;
+            } else if (promise._state === STATE_REJECTED) {
+                watchers = promise._rejectedWatcher;
             }
             while (watchers.length > 0) {
                 let watcher = watchers.shift();
-                watcher(this.result);
+                watcher(promise._result);
             }
-        }
-    };
-    this[randomKey] = obj;
-    executor(
-        (v) => {
-            if (obj.state === null) {
-                obj.state = STATE_FULFILLED;
-                obj.result = v;
-                obj.tryFinish();
-            }
-        },
-        (v) => {
-            if (obj.state === null) {
-                obj.state = STATE_REJECTED;
-                obj.result = v;
-                obj.tryFinish();
-            }
-        },
-    );
+        };
+    }
+}
+
+function MyPromise(executor) {
+    let promise = this;
+    makePromise(this);
+    executor(function (value) {
+        resolve(promise, value);
+    }, function (reason) {
+        reject(promise, reason);
+    },);
 
     this.then = function (onFulfil, onRejected) {
-        return runInnerFunc(this, onFulfil, onRejected);
+        return handleThen(promise, onFulfil, onRejected);
     };
 
     this.catch = function (onRejected) {
-        return runInnerFunc(this, null, onRejected);
+        return this.then(null, onRejected);
     };
 
-    this.finally = function (func) {
-        return runInnerFinallyFunc(this, func);
+    this.finally = function (callback) {
+        return this.then((v) => {
+            callback && callback();
+            return v;
+        }, (reason) => {
+            callback && callback();
+            return MyPromise.reject(reason);
+        });
     };
 }
 
