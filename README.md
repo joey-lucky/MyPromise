@@ -1,91 +1,52 @@
 [toc]
-# 震惊，实现Promise竟然只需要一分钟，史上最简单的Promise源码教学
+# Promise源码教学
 
-## 一、概念
+源码实现三部曲
+1. 了解api
+2. 分析难点
+3. 实现源码
 
-- Fulfilled-Promise，被完成的Promise对象
-- Rejected-Promise，被拒绝的Promise对象
 
-## 二、Promise的特点
+## 一、了解APi
 
-### 2.1 then/catch/finally都会返回一个新的Promise对象
+Promise用于创建异步任务，任务的执行结果分成成功和失败
+- Fulfilled-Promise，执行成功的Promise对象
+- Rejected-Promise，执行失败的Promise对象
+
+### 1.1 then/catch/finally 都会返回一个新的Promise对象
 
 ```
 // 测试then
 let p1 = Promise.resolve();
 let p2 = p1.then();
 p2.finally(()=>{
-    console.log(p1 === p2); //打印false，说明是新对象
+    console.log(p1 === p2); //false
 });
-```
-```
+
 // 测试catch
 let p1 = Promise.reject(1);
 let p2 = p1.catch();
 p2.finally(()=>{
-    console.log(p1 === p2); //打印false，说明是新对象
+    console.log(p1 === p2); //false
 });
-```
-```
+
 // 测试finally
 let p1 = Promise.resolve();
 let p2 = p1.finally();
 p2.finally(()=>{
-    console.log(p1 === p2); //打印false，说明是新对象
+    console.log(p1 === p2); //false
 });
-```
 
-### 2.2 即使then/catch内部函数返回Promise对象，then/catch仍然是返回新对象，与内部函数返回的Promise有相同的执行结果
-
-```
-// 测试then
-let onFulfilledRes = null;
+// 测试回调函数返回Promise对象的情况
+let onFulfilledRes = Promise.resolve();
 let thenReturn = Promise.resolve()
     .then(() => {
-        onFulfilledRes = Promise.resolve()
         return onFulfilledRes;
     });
-thenReturn.then((v) => {
-    console.log(thenReturn === onFulfilledRes); //打印false，说明是新对象
-});
-```
-```
-// 测试catch
-let onRejectedRes = null;
-let thenReturn = Promise.reject()
-    .catch(() => {
-        onRejectedRes = Promise.resolve()
-        return onRejectedRes;
-    });
-thenReturn.then((v) => {
-    console.log(thenReturn === onRejectedRes);  //打印false，说明是新对象
-});
-```
-```
-// 测试新对象的执行结果
-Promise.resolve()
-    .then(()=>Promise.resolve(1)) 
-    .then((v)=>console.log(v)) //打印1，说明新对象和内部函数有相同的执行结果
+console.log(thenReturn === onFulfilledRes); //false
 ```
 
-### 2.3 如果onFulfilled/onRejcted返回值是Rejected-Promise，则then/catch也将会返回新的Rejected-Promise对象
-```
-Promise.resolve()
-    .then(()=>Promise.reject(1))
-    .catch((v)=>console.log(v)) // 调用了catch，打印1
-```
-
-### 2.4 finally无法修改Promise状态
-```
-// 
-Promise.resolve(1)
-    .finally(() => 2)
-    .then((v) => {
-        console.log(v)  // 打印1
-    });
-```
-
-### 2.5 可以多次调用then/catch/finally方法
+### 1.2 then/catch/finally 可以多次调用
 
 ```
 // 测试then和finally,catch是一样的
@@ -94,13 +55,15 @@ let p = new Promise((resolve, reject) => {
         resolve(1)
     }, 1000);
 });
-p.then((v) => console.log(v)); //打印1
-p.then((v) => console.log(v)); //打印1
-p.finally(() => console.log("finally1")); //打印finally1
-p.finally(() => console.log("finally2")); //打印finally2
+p.then((v) => console.log(v)); //1
+p.then((v) => console.log(v)); //1
+p.finally(() => console.log("finally1")); //finally1
+p.finally(() => console.log("finally2")); //finally2
 ```
 
-### 2.6 promise按事件队列进行执行
+### 1.3 执行顺序按照先进先出的原则
+
+> 如果回调函数返回Promise对象，相当于多了一层。
 
 ```
 Promise.resolve().then(() => {
@@ -128,77 +91,218 @@ Promise.resolve().then(()=>{
 2-2
 ```
 
-## 三、实现难点
+## 二、实现难点
 
-### 3.1 构建事件队列
+### 2.1 构建微任务队列模块
 
-- 队列规则：先进先出
-- 每次触发执行then/catch/finally内部函数时插入到事件队列中
-- 循环执行队列处理
+> 队列规则是先进先出，循环执行队列处理，并暴露一个添加任务的函数
 
 ```
 // 简易的事件队列
-const queue = [];
-function runQueue() {
-    while (queue.length > 0) {
-        let func = queue.shift();
+const mircoTask = [];
+
+(function runQueue() {
+    while (mircoTask.length > 0) {
+        let func = mircoTask.shift();
         func && func();
     }
-    setTimeout(runQueue,10)
+    setTimeout(runQueue,1)
+})();
+
+function addMircoTask(func) {
+    mircoTask.push(func);
+}
+
+module.exports = {
+    addMircoTask:addMircoTask
 }
 ```
 
-### 3.2 then/catch/finally内部函数的处理
+### 2.2 构建发布订阅模式
 
-- 内部函数处理时，需要返回一个新的Promise对象
+```
+class MyPromise {
+    _resolveSubscriber = [];
+    _rejectSubscriber = [];
+    _result = null; // 结果
+    _state = -1; // 状态，1表示成功 0表示失败 -1表示等待结果
+
+    _finish = () => {
+        if (this._state !== -1) { 
+            let subscribers = this._state === 0 ? this._rejectSubscriber : this._resolveSubscriber;
+            while (subscribers.length > 0) {
+                let subscriber = subscribers.shift(); // 遵守先进先出的原则
+                subscriber(this._result);
+            }
+        }
+    };
+}
+```
+
+- 订阅者是then/catch/finally里面的回调函数。
+
     ```
-    function handleThen(promise, onFulfill, onRejected) {
-        return new MyPromise((resolve, reject) => {
-            promise._resolveWatcher.push(createWatcher(promise, resolve, reject, onFulfill));
-            promise._rejectedWatcher.push(createWatcher(promise, resolve, reject, onRejected));
-            promise._tryFinish();
-        });
-    }
+    promise.then(function 订阅者(){
+    
+    });
     ```
-- 内部函数执行时，需要通过事件队列
-    ```
-    function createWatcher(promise, resolve, reject, innerFunc) {
-        return () => {
-            eventQueue.addQueue(() => {
-                handleInnerFuncRes(resolve, reject, innerFunc, promise);
-            });
+
+- 订阅的内容是执行结果，通过_finish通知订阅者
+
+### 2.3 构造函数中的resolve和reject函数
+
+```
+class MyPromise {
+    constructor(executor) {
+        const resolve = (value) => {
+            this._state = 1;
+            this._result = value;
+            this._finish();
         };
+        const reject = (err)=>{
+            this._state = 0;
+            this._result = err;
+            this._finish();
+        }
+        executor(resolve, reject);
     }
-    ```
-    > eventQueue 是上面封装的事件队列
+}
+```
 
-- 内部函数执行结果，如果返回Promise的处理
+> 调用resolve表示执行成功，reject表示执行失败，除了记录状态和结果外，还要调用_finish，通知订阅。
+
+### 2.4 then的实现（难）
+
+**实现思路如下**
+
+- then调用时，会将回调函数（订阅者）加入到订阅者队列。
+
     ```
-    function handleInnerFuncRes(resolve, reject, innerFunc, promise) {
-        let res = innerFunc && innerFunc(promise._result);
-        if (res && res instanceof MyPromise) {
-            res.then((value) => {
-                resolve(value);
-            }, (reason) => {
-                reject(reason);
-            });
-        } else {
-            resolve(res);
+    class MyPromise {
+        then = (resolveCallBack,rejectCallBack)=>{
+            this._resolveSubscriber.push(resolveCallBack);
+            this._rejectSubscriber.push(rejectCallBack);
         }
     }
     ```
-- finally内部函数不需要监听返回值，直接使用父级的返回值即可。
+- 执行会返回一个新的Promise对象
+
     ```
-    this.finally = function (callback) {
-        return this.then((v) => {
-            callback && callback();
-            return v;
-        }, (reason) => {
-            callback && callback();
-            return MyPromise.reject(reason);
+    class MyPromise {
+        then = (resolveCallback, rejectCallback) => {
+            return new MyPromise((resolve,reject)=>{
+                this._resolveSubscriber.push(resolveCallBack);
+                this._rejectSubscriber.push(rejectCallBack);
+            })
+        };
+    }
+    ```
+
+- finish用于响应订阅者，在Promise执行结束后会自动调用，但如果已经结束后，在调用then，需要主动的调用一次finish
+
+    ```
+    class MyPromise {
+        then = (resolveCallback, rejectCallback) => {
+            return new MyPromise((resolve,reject)=>{
+                //....
+                this._finish();
+            })
+        };
+    }
+    ```
+
+  > 不用担心finish函数，因为finish时会判断状态，状态为等待的话，不会执行。
+
+- 回调函数（订阅者）执行是异步的，所以需要将回调函数加入到微任务。
+
+  > 回调函数的返回结果在微任务里面
+
+    ```
+    class MyPromise {
+        then = (resolveCallback, rejectCallback) => {
+            return new MyPromise((resolve,reject)=>{
+                const createMircoTask = (callback) => {
+                    return () => {
+                        mircoTaskQueue.addMircoTask(()=>{
+                           callback(this._result);                    
+                        });
+                    };
+                };
+                this._resolveSubscriber.push(createMircoTask(resolveCallback));
+                this._rejectSubscriber.push(createMircoTask(rejectCallback));
+                this._finish();
+            })
+        };
+    }
+    ```
+
+- 可以通过回调函数的返回值，来控制新的Promise对象的执行结果
+
+  > 回调函数的返回结果在微任务里面
+
+    ```
+    class MyPromise {
+        then = (resolveCallback, rejectCallback) => {
+            return new MyPromise((resolve,reject)=>{
+                const createMircoTask = (callback) => {
+                    return () => {
+                        mircoTaskQueue.addMircoTask(()=>{
+                            let callbackResult = callback(this._result);
+                            resolve(callbackResult);                        
+                        });
+                    };
+                };
+                // ...
+            })
+        };
+    }
+    ```
+
+- 还要兼容回调函数的返回值是Promise对象的情况
+
+    ```
+    class MyPromise {
+        then = (resolveCallback, rejectCallback) => {
+            return new MyPromise((resolve,reject)=>{
+                const createMircoTask = (callback) => {
+                    return () => {
+                        mircoTaskQueue.addMircoTask(()=>{
+                            let callbackResult = callback(this._result);
+                            if (callbackResult instanceof MyPromise) {
+                                callbackResult.then(resolve, reject);
+                            }else {
+                                resolve(callbackResult);
+                            }
+                        });
+                    };
+                };
+                // ...
+            })
+        };
+    }
+    ```
+
+### 2.4 catch和finally的实现（简单）
+
+```
+class MyPromise {
+    catch = (rejectCallback) => {
+        return this.then(()=>this._result, rejectCallback);
+    };
+
+    finally = (callback) => {
+        return this.then(() => {
+            callback();
+            return this._result;
+        }, () => {
+            callback();
+            return this._result;
         });
     };
-    ```
-    > 通过then实现
+}
+```
+
+> 注意事项，catch执行时，如果Promise执行成功的话，不会调用callback，但是执行结果不变
+
 
 > 源码：[https://github.com/joey-lucky/MyPromise](https://github.com/joey-lucky/MyPromise)
